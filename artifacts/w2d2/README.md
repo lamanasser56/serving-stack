@@ -138,3 +138,87 @@ pass/fail result. No concurrency behavior was changed or corrected as part of
 this exercise.
 
 ![Contract fuzzing green check](images/contract-fuzzing-green-check.png)
+
+## Part 3 — Bug Lab: Transformers Upgrade Compatibility
+
+### 1. Reproduce
+
+The dependency constraint in `requirements.txt` was intentionally changed from:
+
+```text
+transformers==4.46.*
+```
+
+to:
+
+```text
+transformers>=4.46
+```
+
+![Loose Transformers dependency constraint](images/buglab-loose-transformers-pin.png)
+
+The VM consequently upgraded to Transformers 5.16.1.
+
+![Transformers 5.16.1 installed](images/buglab-transformers-5-16-1.png)
+
+Before the code fix, `POST /v1/chat/completions` returned:
+
+```text
+Internal Server Error
+```
+
+### 2. Diagnose
+
+Direct inspection of
+`tokenizer.apply_chat_template(..., return_tensors="pt")` showed that its
+return type was:
+
+```text
+<class 'transformers.tokenization_utils_base.BatchEncoding'>
+```
+
+The previous code assumed the method returned a raw tensor and accessed
+`.shape` directly. The newer return type therefore broke that assumption.
+
+![BatchEncoding return-type diagnosis](images/buglab-batchencoding-diagnosis.png)
+
+### 3. Fix
+
+`app/main.py` was updated to:
+
+- Store the result of `apply_chat_template` in `encoded`.
+- Pass `return_dict=True`.
+- Read the tensor from `encoded["input_ids"]`.
+
+The dependency was not downgraded.
+
+### 4. Verify
+
+While the environment was still using Transformers 5.16.1, `verify.py`
+reported:
+
+- Model: `Qwen/Qwen2.5-0.5B-Instruct`
+- Completion content: `Hello.`
+- Usage: `prompt_tokens=35`, `completion_tokens=3`, `total_tokens=38`
+- Streaming: not implemented (optional this week)
+- `GREEN CHECK: PASS`
+
+![Failure reproduction and successful green check](images/buglab-reproduce-and-green-check.png)
+
+### 5. OpenAI Client Verification
+
+`client_test.py` succeeded after the compatibility fix. The observed result
+was:
+
+- Reply: `Three primary colors of light are red, blue, and yellow.`
+- `finish_reason`: `stop`
+- `prompt_tokens`: 24
+- `completion_tokens`: 14
+- `total_tokens`: 38
+
+![OpenAI Python client passing after the fix](images/buglab-openai-client-pass.png)
+
+### 6. Conclusion
+
+The API contract was restored by making the implementation compatible with the
+newer Transformers return type, not by downgrading the dependency.
