@@ -25,6 +25,7 @@ from schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     HealthResponse,
+    ModelCard,
     ModelList,
 )
 
@@ -56,7 +57,7 @@ def health() -> HealthResponse:
 
 
 # ---------------------------------------------------------------------------
-# GET /v1/models  -- TODO
+# GET /v1/models
 # ---------------------------------------------------------------------------
 @app.get("/v1/models", response_model=ModelList)
 def list_models() -> ModelList:
@@ -71,8 +72,14 @@ def list_models() -> ModelList:
     Build a ModelList from schemas.py and return it. Use int(time.time()) for
     created.
     """
-    # TODO: return a ModelList whose single ModelCard.id == MODEL_ID
-    raise NotImplementedError("implement GET /v1/models")
+    return ModelList(
+        data=[
+            ModelCard(
+                id=MODEL_ID,
+                created=int(time.time()),
+            )
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
