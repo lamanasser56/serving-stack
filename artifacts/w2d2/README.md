@@ -115,3 +115,26 @@ and concurrency is intentionally deferred to the week 3 engine.
 All required W2D2 Part 1 checks passed. The health, model-list, non-streaming
 chat-completions, and OpenAI Python client checks succeeded. Optional streaming
 was not implemented.
+
+## Part 2 — Contract Fuzzing
+
+The Extra Lab fuzz suite tested exactly 12 functional cases against the API
+contract:
+
+- 10 invalid requests correctly returned HTTP 422.
+- 2 unusual but valid requests correctly returned HTTP 200.
+- Final result: 12/12 cases passed.
+- `GREEN CHECK: PASS`.
+
+The informational concurrency probe produced these observed results:
+
+- `n=2`
+- `wall=11.868s`
+- `sum-of-individual=23.198s`
+- Reported verdict: `looks concurrent`
+
+The concurrency probe is informational only and does not affect the lab's
+pass/fail result. No concurrency behavior was changed or corrected as part of
+this exercise.
+
+![Contract fuzzing green check](images/contract-fuzzing-green-check.png)
