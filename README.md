@@ -6,22 +6,22 @@ is no week where you start again.
 
 ## What is here
 
-```
-app/        empty. Your service goes here, starting week 2 day 2
+```text
+app/        the FastAPI model-serving application and OpenAI-compatible API
 docs/       the API contract the Agentic AI cohort integrates against
 scripts/    verify-env.sh, which checks your machine against what the labs need
 PINS.md     every version this course depends on
 setup.md    how to work in this repository
 ```
 
-That is the whole repository, and the shortness of that list is the point. You
-are not given a finished system to read. You build one, a day at a time, and by
-week 6 another cohort's agents are calling it.
+The repository began with a deliberately small structure. The serving system
+is added one lab at a time, and by week 6 another cohort's agents will be
+calling it.
 
 ## What you add, and when
 
 | Week | Day | What you add |
-|---|---|---|
+| --- | --- | --- |
 | 2 | Mon | `app/` behind an OpenAI-compatible `/v1` on CPU |
 | 2 | Tue | `Dockerfile`, and your image on Docker Hub |
 | 2 | Wed | `Dockerfile.gpu`, the same code on a GPU |
@@ -29,7 +29,7 @@ week 6 another cohort's agents are calling it.
 | 3 | Thu | `bench/`, the harness that measures all of it |
 
 Each one is a lab, and each one starts from files that day hands you. Lab
-instructions, decks and quizzes are on the course Drive, one folder per week.
+instructions, decks, and quizzes are on the course Drive, one folder per week.
 This repository is your code.
 
 ## Start here
@@ -41,53 +41,125 @@ This repository is your code.
 Then read `setup.md`. It is short, and it covers the two things that go wrong:
 committing a key, and committing a model.
 
-## W2D1: First Contact with GPU Memory
+# Implementation Progress
 
-This lab measures the GPU memory usage and generation throughput of
-`Qwen/Qwen2.5-1.5B-Instruct` on an NVIDIA T4 at three numerical precisions.
-The measurements were collected in Google Colab and compared with estimates
-from the formula:
+## W2D1
 
-> Model weight memory ≈ number of parameters × bytes per parameter
+W2D1 profiled `Qwen/Qwen2.5-1.5B-Instruct` on an NVIDIA T4 at fp16, int8,
+and int4 precision. The work compared predicted weight memory with resident
+VRAM, measured generation throughput, and observed context-length memory
+growth. The benchmark implementation is in `generate.py`, with machine-readable
+measurements in `results.json`.
 
-### Prediction (before running the notebook)
+| Precision | Measured VRAM | Throughput |
+| --- | ---: | ---: |
+| fp16 | 3.29 GB | 28.9 tokens/s |
+| int8 | 1.87 GB | 5.1 tokens/s |
+| int4 | 1.24 GB | 11.7 tokens/s |
 
-For a 1.5-billion-parameter model, my weight-memory predictions were:
+The results verified that quantisation reduced memory but did not improve
+generation speed on this T4. Detailed evidence is in
+[`artifacts/w2d1/`](artifacts/w2d1/README.md).
 
-- **fp16:** 1.5B × 2 bytes = **3.0 GB**
-- **int8:** 1.5B × 1 byte = **1.5 GB**
-- **int4:** 1.5B × 0.5 bytes = **0.75 GB**
-- **Runtime overhead:** approximately **1–2 GB** in addition to the weights
-- **fp32 on a 15 GB T4:** **Yes.** The weights should occupy about 6 GB, so
-  the model should fit before accounting for larger contexts and runtime
-  allocations.
+## W2D2
 
-### Results
+W2D2 implemented a CPU-only FastAPI service for
+`Qwen/Qwen2.5-0.5B-Instruct` with:
 
-| dtype | predicted GB | measured GB | observed bytes/param | tokens/s |
-| --- | ---: | ---: | ---: | ---: |
-| fp16 | 3.00 | 3.29 | 2.19 | 28.9 |
-| int8 | 1.50 | 1.87 | 1.25 | 5.1 |
-| int4 | 0.75 | 1.24 | 0.83 | 11.7 |
+- `GET /health`
+- `GET /v1/models`
+- Non-streaming `POST /v1/chat/completions`
+- OpenAI-compatible response shapes and token accounting
 
-Observed bytes per parameter was calculated as measured resident GPU bytes
-divided by 1.5 billion parameters.
+The standard OpenAI Python client worked by changing only its `base_url`. The
+API verifier returned `GREEN CHECK: PASS` with a valid completion and usage of
+35 prompt tokens, 3 completion tokens, and 38 total tokens.
 
-### Observations
+Contract hardening and fuzzing exercised 12 cases: ten invalid requests
+correctly returned HTTP 422 and two unusual valid requests returned HTTP 200.
+All 12 passed. A compatibility lab also reproduced a failure with Transformers
+5.16.1, diagnosed `apply_chat_template` returning `BatchEncoding`, and fixed
+the service by using `return_dict=True` and reading
+`encoded["input_ids"]`—without downgrading. The verifier and OpenAI client both
+passed after the fix.
 
-The measured values are higher than the weights-only predictions because
-resident GPU memory also includes the CUDA context, allocator reservations,
-model buffers, and tensors that remain at higher precision. This fixed overhead
-has a proportionally larger effect on the quantized models, which is why the
-observed bytes per parameter are above the theoretical 1 byte for int8 and
-0.5 bytes for int4.
+Detailed API, fuzzing, and compatibility evidence is in
+[`artifacts/w2d2/`](artifacts/w2d2/README.md).
 
-Quantization reduced memory usage but did not improve generation speed in this
-experiment. fp16 was fastest at 28.9 tokens/s. int8 was slowest at 5.1 tokens/s,
-while int4 reached 11.7 tokens/s. This ordering is expected on the T4 because
-the bitsandbytes int8 and int4 paths use different kernels and perform
-dequantization during generation.
+## W2D3
 
-The machine-readable measurements are stored in `results.json`, and the
-benchmark implementation is stored in `generate.py`. The complete illustrated
-lab report is available in [`artifacts/w2d1/README.md`](artifacts/w2d1/README.md).
+### Containerisation
+
+The serving application was packaged in a CPU-focused `python:3.11-slim`
+image. Requirements are installed before application code to preserve the
+dependency cache layer. The build uses pip's `--no-cache-dir` and the PyTorch
+CPU wheel source, then runs the service as the non-root `app` user.
+
+Model weights remain outside the image in a named Hugging Face cache volume at
+`/home/app/.cache/huggingface`. Local container tests passed for `/health` and
+`/v1/chat/completions`, and recreating the container reused the mounted cache.
+
+| Build | Image size |
+| --- | ---: |
+| Naive image | 17.9 GB |
+| Slim CPU image | 2.98 GB |
+| Reduction | 14.92 GB (~83.4%) |
+
+The final image was published as `lamai7/aidc-serving:cpu-v1`. A verifier
+removed the local copy, pulled the published image fresh, checked health and a
+real completion, and ended with `GREEN CHECK: PASS`.
+
+See [`artifacts/w2d3/README.md`](artifacts/w2d3/README.md) for the detailed
+container evidence.
+
+### Multi-stage Build Golf
+
+A standalone lightweight registry service was created under
+`w2d3-multistage/`. The multi-stage build copies only runtime dependencies,
+`main.py`, and `registry.json` into the final image.
+
+| Measurement | Naive | Multi-stage | Saving |
+| --- | ---: | ---: | ---: |
+| Docker-reported disk usage | 349 MB | 237 MB | 112 MB (32.1%) |
+| Final verifier measurement | 87.6 MB | 56.8 MB | 30.8 MB (35.2%) |
+
+The two size pairs come from different Docker size measurements and display
+metrics. Both demonstrate the same reduction. The multi-stage image remained
+below the 300 MB target, retained the required registry endpoints, saved more
+than 20%, and finished with `GREEN CHECK: PASS`.
+
+### Docker Layer Cache Bug Lab
+
+The broken Dockerfile placed `COPY . .` before `pip install`, so a comment-only
+code edit invalidated the source layer and the following dependency layer. The
+fix copied `requirements.txt` first, installed dependencies, and copied the
+application afterward.
+
+After the correction, the pip-install step showed `Using cache`, and the
+measured code-only rebuild completed in **1.917 seconds**. The optional
+`.dockerignore` stretch is not claimed as part of this bug lab.
+
+## Current State
+
+At the end of W2D3, the repository contains:
+
+- A FastAPI serving application with local CPU inference.
+- An OpenAI-compatible `/v1` API and validated request/response contract.
+- A CPU Docker image with an external Hugging Face model cache.
+- A published Docker Hub image with fresh-pull verification.
+- API, fuzzing, image, and registry verification tooling.
+- A lightweight multi-stage registry experiment.
+- A reproduced and corrected Docker layer-cache ordering bug.
+
+## Progress Status
+
+| Stage | Status |
+| ----- | --------- |
+| W2D1 | Completed |
+| W2D2 | Completed |
+| W2D3 | Completed |
+| W2D4 | Next |
+| W2D5 | Next |
+
+W2D4 and W2D5 are the next stages. This README will be extended after those
+labs are completed.
