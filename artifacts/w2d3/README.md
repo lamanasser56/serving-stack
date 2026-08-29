@@ -90,3 +90,107 @@ The verifier performed a fresh registry pull. This proves that the published
 image works, rather than verifying only the locally built copy.
 
 ![Published image green check](images/w2d3-green-check-pass.png)
+
+## Extra Lab — Multi-stage Build Golf
+
+### Registry Service
+
+A standalone lightweight FastAPI model-registry service was created under
+`w2d3-multistage/`. It uses only these dependencies:
+
+```text
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
+pydantic==2.9.*
+```
+
+Local testing succeeded for all required routes:
+
+- `GET /health`
+- `GET /registry`
+- `GET /registry/Qwen2.5-1.5B-Instruct`
+- `GET /registry/nonexistent` returned HTTP 404
+
+![Local registry endpoint tests](images/w2d3-multistage-registry-local-test.png)
+
+### Naive Build
+
+The single-stage image was built as `registry:naive`. Docker reported:
+
+- Disk usage: **349 MB**
+- Content size: **87.6 MB**
+
+The naive Dockerfile copies the entire build context before installing the
+dependencies.
+
+![Naive registry image size](images/w2d3-multistage-naive-size.png)
+
+### Multi-stage Build
+
+The optimized image was built as `registry:multistage`. Docker reported:
+
+- Disk usage: **237 MB**
+- Content size: **56.8 MB**
+
+The builder installs dependencies with `--prefix=/install/deps`. The runtime
+stage copies only:
+
+- `/install/deps` to `/usr/local`
+- `app/main.py`
+- `app/registry.json`
+
+The resulting image is below the 300 MB target.
+
+![Multi-stage registry image size](images/w2d3-multistage-image-size.png)
+
+### Size Report
+
+`report_sizes.sh` produced:
+
+```text
+naive single-stage: 349 MB
+multi-stage:        237 MB
+savings:            112 MB (32.1%)
+target:             300 MB
+```
+
+The generated `size_report.json` contained:
+
+```json
+{
+  "naive_mb": 349.0,
+  "multistage_mb": 237.0,
+  "savings_mb": 112.0,
+  "savings_pct": 32.1,
+  "target_mb": 300.0,
+  "fits_target": true
+}
+```
+
+![Multi-stage size report](images/w2d3-multistage-size-report.png)
+
+### Final Verifier
+
+The final verifier reported exactly:
+
+```text
+naive image:       87.6 MB
+multi-stage image: 56.8 MB
+saved:             30.8 MB (35.2%)
+GREEN CHECK: PASS
+```
+
+The apparent difference between the 349/237 MB values and the 87.6/56.8 MB
+values comes from different Docker size measurements and display metrics. Both
+sets of measurements demonstrate the same successful reduction.
+
+![Multi-stage final green check](images/w2d3-multistage-green-check.png)
+
+### Conclusion
+
+The multi-stage build:
+
+- Stayed below the 300 MB target.
+- Achieved more than 20% savings.
+- Retained all required registry functionality.
+- Passed the final green check.
