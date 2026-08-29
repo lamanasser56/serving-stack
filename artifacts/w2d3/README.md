@@ -194,3 +194,84 @@ The multi-stage build:
 - Achieved more than 20% savings.
 - Retained all required registry functionality.
 - Passed the final green check.
+
+## Part 3 — Bug Lab: The Rebuild That Never Gets Faster
+
+### Reproduce
+
+The intentionally broken Dockerfile used:
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install --no-cache-dir -r app/requirements.txt
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+After a comment-only change to `app/main.py`, `svc:v2` rebuilt the dependency
+layer. `docker history svc:v2` showed:
+
+```text
+48a651cf85f4   12 seconds ago   /bin/sh -c pip install --no-cache-dir -r app…   51.5MB
+00b11e0243fc   22 seconds ago   /bin/sh -c #(nop) COPY dir:0179572899395abef…   24.6kB
+```
+
+`COPY . .` included `app/main.py`. Changing that file invalidated the `COPY`
+layer, which also invalidated the following pip-install layer even though
+`requirements.txt` had not changed.
+
+### Fix
+
+The Dockerfile was reordered to:
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY app/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app/ .
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+Dependencies now have their own stable cache layer before the application code
+is copied.
+
+### Verification
+
+After building `svc:v3`, another comment-only edit was made to `app/main.py`
+and `svc:v4` was built. The output was:
+
+```text
+Step 2/6 : WORKDIR /app
+---> Using cache
+Step 3/6 : COPY app/requirements.txt .
+---> Using cache
+Step 4/6 : RUN pip install --no-cache-dir -r requirements.txt
+---> Using cache
+Step 5/6 : COPY app/ .
+---> 7b9e1584baee
+
+Successfully built 9f16f7a54d6f
+Successfully tagged svc:v4
+
+real    0m1.917s
+user    0m0.011s
+sys     0m0.022s
+```
+
+`docker history svc:v4` showed the reused dependency layer:
+
+```text
+b0b67eb073be   About a minute ago   /bin/sh -c pip install --no-cache-dir -r req…   51.5MB
+```
+
+### Conclusion
+
+- The bug was Docker layer ordering, not pip or `requirements.txt`.
+- `COPY . .` before pip install caused code edits to invalidate the dependency
+  layer.
+- Copying `requirements.txt` first isolated dependency installation from code
+  changes.
+- After the fix, pip install was reused from cache.
+- The code-only rebuild completed in 1.917 seconds.
